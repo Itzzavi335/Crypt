@@ -1,190 +1,195 @@
--- This Script is Part of the Prometheus Obfuscator by Levno_710
+-- Modified by Avi
 --
 -- AntiTamper.lua
 --
--- This Script provides an Obfuscation Step, that breaks the script, when someone tries to tamper with it.
+-- Hardened Anti-Tamper Step (VM-focused)
 
-local Step = require("prometheus.step");
-local Ast = require("prometheus.ast");
-local Scope = require("prometheus.scope");
+local Step = require("prometheus.step")
+local Ast = require("prometheus.ast")
+local Scope = require("prometheus.scope")
 local RandomStrings = require("prometheus.randomStrings")
-local Parser = require("prometheus.parser");
-local Enums = require("prometheus.enums");
-local logger = require("logger");
+local Parser = require("prometheus.parser")
+local Enums = require("prometheus.enums")
+local logger = require("logger")
 
-local AntiTamper = Step:extend();
-AntiTamper.Description = "This Step Breaks your Script when it is modified. This is only effective when using the new VM.";
-AntiTamper.Name = "Anti Tamper";
+local AntiTamper = Step:extend()
+AntiTamper.Description = "Breaks execution if the script is modified or inspected. Strongest when used with VM."
+AntiTamper.Name = "Anti Tamper"
 
 AntiTamper.SettingsDescriptor = {
     UseDebug = {
         type = "boolean",
         default = true,
-        description = "Use debug library. (Recommended, however scripts will not work without debug library.)"
+        description = "Uses debug library for advanced tamper detection."
     }
 }
 
 function AntiTamper:init(settings)
-	
+    self.UseDebug = settings.UseDebug
 end
 
 function AntiTamper:apply(ast, pipeline)
     if pipeline.PrettyPrint then
-        logger:warn(string.format("\"%s\" cannot be used with PrettyPrint, ignoring \"%s\"", self.Name, self.Name));
-        return ast;
+        logger:warn(string.format(
+            "\"%s\" cannot be used with PrettyPrint, ignoring \"%s\"",
+            self.Name,
+            self.Name
+        ))
+        return ast
     end
-	local code = "do local valid = true;";
-    if self.UseDebug then
-        local string = RandomStrings.randomString();
-        code = code .. [[
-            -- Anti Beautify
-			local sethook = debug and debug.sethook or function() end;
-			local allowedLine = nil;
-			local called = 0;
-			sethook(function(s, line)
-				if not line then
-					return
-				end
-				called = called + 1;
-				if allowedLine then
-					if allowedLine ~= line then
-						sethook(error, "l", 5);
-					end
-				else
-					allowedLine = line;
-				end
-			end, "l", 5);
-			(function() end)();
-			(function() end)();
-			sethook();
-			if called < 2 then
-				valid = false;
-			end
-            if called < 2 then
-                valid = false;
-            end
 
-            -- Anti Function Hook
-            local funcs = {pcall, string.char, debug.getinfo, string.dump}
-            for i = 1, #funcs do
-                if debug.getinfo(funcs[i]).what ~= "C" then
-                    valid = false;
-                end
+    local secret = RandomStrings.randomString()
 
-                if debug.getupvalue(funcs[i], 1) then
-                    valid = false;
-                end
-
-                if pcall(string.dump, funcs[i]) then
-                    valid = false;
-                end
-            end
-
-            -- Anti Beautify
-            local function getTraceback()
-                local str = (function(arg)
-                    return debug.traceback(arg)
-                end)("]] .. string .. [[");
-                return str;
-            end
-    
-            local traceback = getTraceback();
-            valid = valid and traceback:sub(1, traceback:find("\n") - 1) == "]] .. string .. [[";
-            local iter = traceback:gmatch(":(%d*):");
-            local v, c = iter(), 1;
-            for i in iter do
-                valid = valid and i == v;
-                c = c + 1;
-            end
-            valid = valid and c >= 2;
-        ]]
+    local code = [[
+do
+    local valid = true
+    local err = function()
+        error("Tamper Detected!", 0)
     end
-    code = code .. [[
-    local gmatch = string.gmatch;
-    local err = function() error("Tamper Detected!") end;
 
-    local pcallIntact2 = false;
-    local pcallIntact = pcall(function()
-        pcallIntact2 = true;
-    end) and pcallIntact2;
+    -- ==============================
+    -- CORE FUNCTION INTEGRITY CHECK
+    -- ==============================
+    do
+        local funcs = {pcall, string.char, debug and debug.getinfo, string.dump}
+        for i = 1, #funcs do
+            local f = funcs[i]
+            if type(f) ~= "function" then
+                valid = false
+                break
+            end
 
-    local random = math.random;
-    local tblconcat = table.concat;
-    local unpkg = table and table.unpack or unpack;
-    local n = random(3, 65);
-    local acc1 = 0;
-    local acc2 = 0;
-    local pcallRet = {pcall(function() local a = ]] .. tostring(math.random(1, 2^24)) .. [[ - "]] .. RandomStrings.randomString() .. [[" ^ ]] .. tostring(math.random(1, 2^24)) .. [[ return "]] .. RandomStrings.randomString() .. [[" / a; end)};
-    local origMsg = pcallRet[2];
-    local line = tonumber(gmatch(tostring(origMsg), ':(%d*):')());
-    for i = 1, n do
-        local len = math.random(1, 100);
-        local n2 = random(0, 255);
-        local pos = random(1, len);
-        local shouldErr = random(1, 2) == 1;
-        local msg = origMsg:gsub(':(%d*):', ':' .. tostring(random(0, 10000)) .. ':');
-        local arr = {pcall(function()
-            if random(1, 2) == 1 or i == n then
-                local line2 = tonumber(gmatch(tostring(({pcall(function() local a = ]] .. tostring(math.random(1, 2^24)) .. [[ - "]] .. RandomStrings.randomString() .. [[" ^ ]] .. tostring(math.random(1, 2^24)) .. [[ return "]] .. RandomStrings.randomString() .. [[" / a; end)})[2]), ':(%d*):')());
-                valid = valid and line == line2;
+            local info = debug.getinfo(f)
+            if not info or info.what ~= "C" then
+                valid = false
+                break
             end
-            if shouldErr then
-                error(msg, 0);
+
+            if debug.getupvalue(f, 1) then
+                valid = false
+                break
             end
-            local arr = {};
-            for i = 1, len do
-                arr[i] = random(0, 255);
+
+            if pcall(string.dump, f) then
+                valid = false
+                break
             end
-            arr[pos] = n2;
-            return unpkg(arr);
-        end)};
-        if shouldErr then
-            valid = valid and arr[1] == false and arr[2] == msg;
-        else
-            valid = valid and arr[1];
-            acc1 = (acc1 + arr[pos + 1]) % 256;
-            acc2 = (acc2 + n2) % 256;
         end
     end
-    valid = valid and acc1 == acc2;
 
-    if valid then else
-        repeat 
-            return (function()
-                while true do
-                    l1, l2 = l2, l1;
-                    err();
-                end
-            end)(); 
-        until true;
+    -- ==============================
+    -- BYTECODE HASH CHECK
+    -- ==============================
+    do
+        local function marker()
+            return ]] .. math.random(100000, 999999) .. [[
+        end
+
+        local dump1 = string.dump(marker)
+        local h1 = 0
+        for i = 1, #dump1 do
+            h1 = (h1 + dump1:byte(i) * i) % 2147483647
+        end
+
+        local dump2 = string.dump(marker)
+        local h2 = 0
+        for i = 1, #dump2 do
+            h2 = (h2 + dump2:byte(i) * i) % 2147483647
+        end
+
+        if h1 ~= h2 then
+            valid = false
+        end
+    end
+
+    -- ==============================
+    -- DEBUGGER / SLOW EXECUTION DETECT
+    -- ==============================
+    if debug then
+        local ticks = 0
+        local start = os.clock()
+
+        debug.sethook(function()
+            ticks = ticks + 1
+            if ticks > 6000 then
+                debug.sethook()
+            end
+        end, "", 1)
+
+        for i = 1, 3000 do end
+        debug.sethook()
+
+        if os.clock() - start > 0.2 then
+            valid = false
+        end
+    end
+
+    -- ==============================
+    -- TRACEBACK CONSISTENCY CHECK
+    -- ==============================
+    do
+        local function trace(arg)
+            return debug.traceback(arg)
+        end
+
+        local tb = trace("]] .. secret .. [[")
+        local first = tb:match("^(.-)\n")
+        if first ~= "]] .. secret .. [[" then
+            valid = false
+        end
+
+        local last
+        for line in tb:gmatch(":(%d+):") do
+            if last and line ~= last then
+                valid = false
+                break
+            end
+            last = line
+        end
+    end
+
+    -- ==============================
+    -- ENVIRONMENT FINGERPRINT
+    -- ==============================
+    do
+        if getmetatable(_G) ~= nil then
+            valid = false
+        end
+
+        if rawget(_G, "_ENV") then
+            valid = false
+        end
+    end
+
+    -- ==============================
+    -- CONTROLLED FAILURE (CORRUPT STATE)
+    -- ==============================
+    if not valid then
+        local a, b = 1, 2
         while true do
-            l2 = random(1, 6);
-            if l2 > 2 then
-                l2 = tostring(l1);
-            else
-                l1 = l2;
+            a, b = b, a + b
+            if a % 7 == 0 then
+                err()
             end
         end
-        return;
     end
+
+    -- ==============================
+    -- FINAL SANITY LOOP
+    -- ==============================
+    repeat until valid
+end
+]]
+
+    local parsed = Parser:new({
+        LuaVersion = Enums.LuaVersion.Lua51
+    }):parse(code)
+
+    local doStat = parsed.body.statements[1]
+    doStat.body.scope:setParent(ast.body.scope)
+    table.insert(ast.body.statements, 1, doStat)
+
+    return ast
 end
 
-    -- Anti Function Arg Hook
-    local obj = setmetatable({}, {
-        __tostring = err,
-    });
-    obj[math.random(1, 100)] = obj;
-    (function() end)(obj);
-
-    repeat until valid;
-    ]]
-
-    local parsed = Parser:new({LuaVersion = Enums.LuaVersion.Lua51}):parse(code);
-    local doStat = parsed.body.statements[1];
-    doStat.body.scope:setParent(ast.body.scope);
-    table.insert(ast.body.statements, 1, doStat);
-
-    return ast;
-end
-
-return AntiTamper;
+return AntiTamper
